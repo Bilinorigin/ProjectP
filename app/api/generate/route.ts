@@ -18,29 +18,24 @@ interface GenerateRequest {
   motto?: string;
   squadron?: string;
   shape?: PatchShape;
-  count?: number; // default 4 for the 2x2 grid
+  count?: number;
 }
 
 const OPENAI_URL = "https://api.openai.com/v1/images/generations";
 
-/**
- * Node's fetch (undici) rejects any header byte outside 0x00-0xFF with a
- * TypeError, and OpenAI rejects anything that isn't a clean `sk-...` key.
- *
- * When a key is pasted from a Hebrew terminal / RTL editor it can silently
- * carry bidi marks (U+200E/F, U+202A–E), zero-width spaces (U+200B–D),
- * a BOM (U+FEFF), or wrapping quotes — all of which break the header.
- *
- * This helper strips every non-printable-ASCII byte so whatever we hand to
- * `Authorization` is guaranteed to be a valid HTTP header value.
+/*
+ * Strip BOM, zero-width chars, bidi/RTL marks, wrapping quotes, and any
+ * non-printable-ASCII byte from the API key before it touches the
+ * Authorization header. Node fetch (undici) throws a TypeError
+ * "ByteString" if any header byte is outside the 0x00-0xFF ASCII range.
  */
 function sanitizeApiKey(raw: string | undefined): string {
   if (!raw) return "";
   return raw
-    .replace(/^\uFEFF/, "")                 // BOM
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "") // zero-width + bidi
-    .replace(/^["'`]|["'`]$/g, "")          // wrapping quotes
-    .replace(/[^\x20-\x7E]/g, "")          // keep only printable ASCII
+    .replace(/^\uFEFF/, "")
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "")
+    .replace(/^["'`]|["'`]$/g, "")
+    .replace(/[^\x20-\x7E]/g, "")
     .trim();
 }
 
@@ -53,8 +48,20 @@ function extractOpenAIError(json: unknown): string | null {
   return [err.code, err.type, err.message].filter(Boolean).join(" | ") || null;
 }
 
+function isFatalOrgError(message: string): boolean {
+  return /billing_hard_limit_reached|insufficient_quota|rate_limit_exceeded|invalid_api_key|account_deactivated/i.test(
+    message,
+  );
+}
+
+function extractErrorCode(message: string): string | null {
+  const m = message.match(
+    /billing_hard_limit_reached|insufficient_quota|rate_limit_exceeded|invalid_api_key|account_deactivated|content_policy_violation/i,
+  );
+  return m ? m[0] : null;
+}
+
 export async function POST(req: Request) {
-  // 1) Read + sanitize the API key.
   const rawKey = process.env.OPENAI_API_KEY;
   const apiKey = sanitizeApiKey(rawKey);
 
@@ -68,13 +75,12 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error:
-          "OPENAI_API_KEY is not configured (or was empty after stripping non-ASCII characters). Re-paste the key in Vercel → Settings → Environment Variables, making sure there are no hidden characters, then redeploy.",
+          "OPENAI_API_KEY is not configured (or was empty after stripping non-ASCII characters). Re-paste the key in Vercel > Settings > Environment Variables, then redeploy.",
       },
       { status: 500 },
     );
   }
 
-  // 2) Hard guarantee: the key we pass to Authorization must be ASCII-only.
   if (!/^[\x20-\x7E]+$/.test(apiKey)) {
     console.error(
       "[/api/generate] API key still contains non-ASCII bytes after sanitize",
@@ -85,14 +91,12 @@ export async function POST(req: Request) {
     );
   }
 
-  // Masked fingerprint in logs — confirms which key is in use without leaking.
   console.log("[/api/generate] key ok", {
     length: apiKey.length,
-    fingerprint: `${apiKey.slice(0, 3)}…${apiKey.slice(-3)}`,
+    fingerprint: `${apiKey.slice(0, 3)}...${apiKey.slice(-3)}`,
     vercelEnv: process.env.VERCEL_ENV ?? "unknown",
   });
 
-  // 3) Parse body.
   let body: GenerateRequest;
   try {
     body = (await req.json()) as GenerateRequest;
@@ -108,9 +112,6 @@ export async function POST(req: Request) {
     );
   }
 
-  // 4) Build the enhanced prompt. Hebrew / unicode in `idea`, `motto`,
-  //    or `squadron` is fine — it only ever travels in the request BODY,
-  //    which is explicitly UTF-8 encoded below.
   const enhanced = enhancePrompt({
     country: body.country,
     branch: body.branch,
@@ -124,22 +125,22 @@ export async function POST(req: Request) {
   const count = Math.min(Math.max(body.count ?? 4, 1), 4);
   const variants = [
     "front-facing heraldic layout",
-    "rotated 15° with dynamic action posing",
+    "tighter crop with bolder iconography",
     "simplified iconic silhouette version",
     "ornate detailed version with finer stitching",
   ].slice(0, count);
 
-  // 5) Call DALL·E 3 sequentially (not parallel) so we don't trip per-minute
-  //    rate limits on low-tier OpenAI orgs. If we hit a fatal org-wide error
-  //    (billing cap, invalid key, rate limit), stop immediately — every
-  //    further attempt will fail for the same reason and just burns latency.
   const images: string[] = [];
   const errors: string[] = [];
   let fatalCode: string | null = null;
 
   for (let i = 0; i < variants.length; i++) {
     try {
-      const url = await callDalle(apiKey, `${enhanced.prompt}, ${variants[i]}`, i);
+      const url = await callDalle(
+        apiKey,
+        `${enhanced.prompt}, ${variants[i]}`,
+        i,
+      );
       images.push(url);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -167,9 +168,7 @@ export async function POST(req: Request) {
         code: fatalCode,
         detail: errors,
         hint:
-          "Check Vercel runtime logs for the full OpenAI error. Common causes: " +
-          "insufficient_quota, billing_hard_limit_reached, rate_limit_exceeded, " +
-          "content_policy_violation, invalid_api_key.",
+          "Check Vercel runtime logs for the full OpenAI error. Common causes: insufficient_quota, billing_hard_limit_reached, rate_limit_exceeded, content_policy_violation, invalid_api_key.",
       },
       { status: 502 },
     );
@@ -190,28 +189,11 @@ export async function POST(req: Request) {
   });
 }
 
-// Errors that are about the *organization* rather than the specific prompt.
-// No point retrying sibling slots — they'll all fail identically.
-function isFatalOrgError(message: string): boolean {
-  return /billing_hard_limit_reached|insufficient_quota|rate_limit_exceeded|invalid_api_key|account_deactivated/i.test(
-    message,
-  );
-}
-
-function extractErrorCode(message: string): string | null {
-  const m = message.match(
-    /billing_hard_limit_reached|insufficient_quota|rate_limit_exceeded|invalid_api_key|account_deactivated|content_policy_violation/i,
-  );
-  return m ? m[0] : null;
-}
-
 async function callDalle(
   apiKey: string,
   prompt: string,
   slot: number,
 ): Promise<string> {
-  // Body — explicitly UTF-8 encoded. This is the ONLY place unicode may live;
-  // headers stay strict ASCII.
   const payload = {
     model: "dall-e-3",
     prompt,
@@ -223,8 +205,6 @@ async function callDalle(
   };
   const bodyBytes = new TextEncoder().encode(JSON.stringify(payload));
 
-  // Headers — constructed via Headers() so any bad byte fails loudly here
-  // (inside the try) rather than deep inside undici.
   const headers = new Headers();
   headers.set("Content-Type", "application/json; charset=utf-8");
   headers.set("Authorization", `Bearer ${apiKey}`);
@@ -238,13 +218,12 @@ async function callDalle(
       cache: "no-store",
     });
 
-    // OpenAI returns JSON for both success and error; parse once.
     const raw = await res.text();
     let json: unknown = null;
     try {
       json = JSON.parse(raw);
     } catch {
-      /* leave as null — raw text will be surfaced */
+      /* leave as null - raw text will be surfaced below */
     }
 
     if (!res.ok) {
@@ -264,9 +243,6 @@ async function callDalle(
     }
     return url;
   } catch (err) {
-    // Catches TypeError from undici (bad header), network failures, and the
-    // re-thrown OpenAI errors above — everything goes to the logs with the
-    // slot index and a preview of the prompt that triggered it.
     console.error(`[/api/generate] slot ${slot} fetch threw`, {
       name: err instanceof Error ? err.name : typeof err,
       message: err instanceof Error ? err.message : String(err),

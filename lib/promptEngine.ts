@@ -61,7 +61,7 @@ export interface EnhancedPrompt {
 const STYLE_RULES: Record<PatchStyle, { texture: string; finish: string }> = {
   embroidery: {
     texture:
-      "high-detail embroidered thread texture, visible satin and chain stitching, merrowed border edge",
+      "highly detailed embroidery thread texture, visible satin and chain stitching, merrowed border",
     finish: "felt backing, slightly raised stitch relief, fabric weave",
   },
   pvc: {
@@ -159,8 +159,13 @@ const COUNTRY_FLAVOR: Record<Country, string> = {
   INT: "international coalition styling, neutral heraldry",
 };
 
+/* Mandatory perspective lock - prepended to every prompt so the AI never
+ * produces tilted, isometric, or 3D-rendered patch mockups. Flat-lay only. */
+const MANDATORY_PERSPECTIVE =
+  "perfectly centered flat-lay, symmetrical front view, orthographic perspective, top-down camera, head-on straight-on view, zero tilt, zero rotation, zero perspective distortion, zero foreshortening";
+
 const NEGATIVE =
-  "photo, photograph, photorealistic skin, real human face, low-res, blurry, jpeg artifacts, watermark, text errors, gibberish letters, mirrored letters, reversed text, extra fingers, cluttered background, modern logo, brand mark";
+  "3D render, isometric view, tilted angle, rotated view, perspective distortion, foreshortening, depth of field, side view, three-quarter view, photo, photograph, photorealistic skin, real human face, low-res, blurry, jpeg artifacts, watermark, text errors, gibberish letters, mirrored letters, reversed text, extra fingers, cluttered background, modern logo, brand mark";
 
 /* ============================================================ */
 /* Hebrew adaptation layer                                       */
@@ -305,6 +310,7 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
   const analysis = analyseHebrew({ ...input, idea: ideaRaw });
 
   const parts: string[] = [
+    MANDATORY_PERSPECTIVE,
     `${shape} ${input.style} military morale patch`,
     `subject: ${ideaRaw}`,
     style.texture,
@@ -314,7 +320,7 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
     COUNTRY_FLAVOR[input.country],
     "centered composition, symmetrical heraldic layout",
     "clean vector-friendly silhouette, strong readable iconography",
-    "studio product shot on dark fabric backdrop, soft directional light",
+    "flat-lay product photograph, evenly lit, dark fabric backdrop, no shadows beneath the patch",
   ];
 
   // Squadron / motto lines — always include English translation when Hebrew.
