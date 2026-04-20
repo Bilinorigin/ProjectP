@@ -298,89 +298,140 @@ function analyseHebrew(input: PromptInput): HebrewAnalysis {
 /* Public API                                                    */
 /* ============================================================ */
 
+/** Strip style-vocabulary from the user's idea so the selected style
+ *  dropdown is the single source of truth. Prevents the "embroidery patch
+ *  of an F-15 PVC patch" contradiction when users redundantly type
+ *  style words into the concept field. */
+function cleanIdea(raw: string): string {
+  return raw
+    .replace(
+      /\b(patch(es)?|morale|embroider\w*|pvc|leather|laser[- ]?cut|subdued|velcro|hook[- ]?and[- ]?loop)\b/gi,
+      "",
+    )
+    .replace(/[ ,]+/g, " ")
+    .replace(/^\s*[,;:\-]+\s*|\s*[,;:\-]+\s*$/g, "")
+    .trim();
+}
+
+function styleAdjective(style: PatchStyle): string {
+  switch (style) {
+    case "embroidery": return "embroidered";
+    case "pvc": return "molded PVC rubber";
+    case "subdued": return "subdued low-visibility embroidered";
+    case "leather": return "tooled leather";
+    case "laser": return "laser-cut multicam fabric";
+  }
+}
+
+function shapeAdjective(shape: PatchShape): string {
+  switch (shape) {
+    case "circle": return "circular";
+    case "shield": return "shield-shaped";
+    case "rectangle": return "rectangular";
+    case "tab": return "narrow tab-style";
+    case "rocker": return "curved rocker-style";
+  }
+}
+
 /**
- * Enhance a short user idea into a structured, technical prompt tuned
- * for tactical patch generation — with automatic Hebrew adaptation.
+ * Enhance a short user idea into a structured, natural-language prompt
+ * tuned for DALL-E 3 with automatic Hebrew adaptation.
+ *
+ * Key design choices (informed by DALL-E 3 quirks):
+ *  - Full sentences, not CSV keyword soup (DALL-E 3 weighs sentence
+ *    structure strongly).
+ *  - One style anchor only - cleanIdea() strips style-conflict words
+ *    from the concept field so there are no contradictions.
+ *  - Composition / perspective rules live at the END of the prompt where
+ *    DALL-E 3's recency weighting gives them the most pull.
+ *  - Concise: aim for ~450-600 chars. Longer prompts dilute every token.
  */
 export function enhancePrompt(input: PromptInput): EnhancedPrompt {
   const branch = BRANCH_RULES[input.branch];
   const style = STYLE_RULES[input.style];
   const shape = input.shape ?? branch.defaultShape;
-  const ideaRaw = input.idea.trim() || "abstract emblem";
-  const analysis = analyseHebrew({ ...input, idea: ideaRaw });
+  const subject = cleanIdea(input.idea.trim()) || "an abstract heraldic emblem";
+  const analysis = analyseHebrew({ ...input, idea: subject });
 
-  const parts: string[] = [
-    MANDATORY_PERSPECTIVE,
-    `${shape} ${input.style} military morale patch`,
-    `subject: ${ideaRaw}`,
-    style.texture,
-    style.finish,
-    ...branch.keywords,
-    `palette: ${branch.palette.join(", ")}`,
-    COUNTRY_FLAVOR[input.country],
-    "centered composition, symmetrical heraldic layout",
-    "clean vector-friendly silhouette, strong readable iconography",
-    "flat-lay product photograph, evenly lit, dark fabric backdrop, no shadows beneath the patch",
-  ];
+  const styleAdj = styleAdjective(input.style);
+  const shapeAdj = shapeAdjective(shape);
+  const subjectEnglish = analysis.fields.idea ? analysis.ideaEnglish : subject;
 
-  // Squadron / motto lines — always include English translation when Hebrew.
+  const sentences: string[] = [];
+
+  // 1) Opening shot — the patch itself + style anchor, single source of truth.
+  sentences.push(
+    `A ${shapeAdj} ${styleAdj} military morale patch, rendered as a flat-lay product photograph on a plain dark fabric surface.`,
+  );
+
+  // 2) Subject / iconography.
+  sentences.push(
+    `The central design depicts ${subjectEnglish}, drawing on ${branch.keywords[0]}.`,
+  );
+
+  // 3) Branch heritage detail (one extra keyword, not all five).
+  if (branch.keywords[1]) {
+    sentences.push(`Iconography cues: ${branch.keywords[1]}.`);
+  }
+
+  // 4) Style / texture.
+  sentences.push(`${style.texture}, ${style.finish}.`);
+
+  // 5) Palette.
+  sentences.push(
+    `Color palette strictly limited to: ${branch.palette.join(", ")}.`,
+  );
+
+  // 6) Text elements — explicit banner placement for readability.
+  const textElements: string[] = [];
   if (input.squadron) {
-    if (analysis.fields.squadron) {
-      parts.push(
-        `squadron designation in Hebrew: "${input.squadron.trim()}" (English meaning: "${analysis.squadronEnglish}")`,
-      );
-    } else {
-      parts.push(`squadron designation: "${input.squadron.trim()}"`);
-    }
+    const sqTxt = input.squadron.trim();
+    textElements.push(
+      analysis.fields.squadron
+        ? `a clean bold squadron number "${sqTxt}" (meaning: ${analysis.squadronEnglish})`
+        : `a clean bold squadron number "${sqTxt}"`,
+    );
   }
   if (input.motto) {
-    if (analysis.fields.motto) {
-      parts.push(
-        `motto banner reads in Hebrew: "${input.motto.trim()}" (English meaning: "${analysis.mottoEnglish}")`,
-      );
-    } else {
-      parts.push(`motto banner reads: "${input.motto.trim()}"`);
-    }
+    const mtTxt = input.motto.trim();
+    textElements.push(
+      analysis.fields.motto
+        ? `a curved ribbon banner at the bottom with the Hebrew motto "${mtTxt}" (meaning: ${analysis.mottoEnglish})`
+        : `a curved ribbon banner at the bottom reading "${mtTxt}"`,
+    );
   }
-
-  // Idea with bilingual pairing so the model still "understands" the concept
-  // even if the Hebrew letterforms render imperfectly.
-  if (analysis.fields.idea) {
-    parts.push(
-      `the concept in English is: "${analysis.ideaEnglish}" — use this meaning to drive the iconography`,
+  if (textElements.length) {
+    sentences.push(
+      `Text elements: ${textElements.join("; ")}. Keep all lettering crisp, legible, and spelled correctly.`,
     );
   }
 
-  // ===== Hebrew-specific rendering directives =====
+  // 7) Hebrew rendering directives (only when Hebrew present).
   if (analysis.any) {
-    parts.push(
-      "the patch features HEBREW TYPOGRAPHY: ensure Hebrew letters are rendered correctly right-to-left, using a bold modern tactical sans-serif Hebrew font; preserve letter shapes (aleph, bet, gimel, etc.); do NOT mirror, flip, or reverse characters; do NOT produce gibberish or Latin-looking approximations",
+    sentences.push(
+      "Any Hebrew text must render correctly right-to-left in a bold modern tactical sans-serif Hebrew font; do not mirror, reverse, or garble the letters.",
     );
   }
-
-  // Banner fallback — if the Hebrew text is non-trivial (>8 chars total),
-  // contain it inside a dedicated curved ribbon so imperfect glyph rendering
-  // doesn't contaminate the main composition.
   if (analysis.totalHebrewChars > 8) {
-    parts.push(
-      "reserve a dedicated curved top or bottom ribbon banner specifically for the text; keep the banner ribbon tonally separated from the central emblem so any typography imperfections remain visually contained",
+    sentences.push(
+      "Contain all Hebrew text inside a dedicated curved ribbon banner so any rendering imperfections stay visually isolated from the main emblem.",
     );
   }
 
-  // ===== Country-level defaults =====
-  // Israeli patches are overwhelmingly bilingual in real life — enforce that
-  // convention even when the user typed only English.
-  const isIsraeli = input.country === "IL";
-  if (isIsraeli) {
-    parts.push(
-      analysis.any
-        ? "bilingual Hebrew + English integration, in the classic IAF / IDF squadron heraldic convention where Hebrew text sits on one ribbon and English on another"
-        : "follow the classic IAF / IDF convention: predominantly English Latin lettering with a small Hebrew accent element (e.g. unit designator) typical of Israeli squadron patches",
+  // 8) Bilingual default for Israeli patches even when user typed only English.
+  if (input.country === "IL" && !analysis.any) {
+    sentences.push(
+      "Follow the classic IAF/IDF squadron heraldic convention: predominantly English Latin lettering with a small Hebrew unit accent.",
     );
   }
+
+  // 9) Mandatory perspective lock - LAST so DALL-E 3 weighs it heaviest.
+  sentences.push(
+    "Composition rules (strict): perfectly centered flat-lay, symmetrical front view, orthographic top-down camera, head-on straight-on view, zero tilt, zero rotation, zero perspective distortion, zero foreshortening, no shadows beneath the patch, no background clutter.",
+  );
 
   return {
-    prompt: parts.join(", "),
+    prompt: sentences.join(" "),
     negativePrompt: NEGATIVE,
     tags: [
       input.country,
@@ -389,7 +440,7 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
       shape,
       ...branch.keywords.slice(0, 2),
       ...(analysis.any ? ["hebrew"] : []),
-      ...(isIsraeli ? ["bilingual"] : []),
+      ...(input.country === "IL" ? ["bilingual"] : []),
     ],
     palette: branch.palette,
     hebrewDetected: analysis.any,
