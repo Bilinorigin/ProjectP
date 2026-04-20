@@ -215,7 +215,7 @@ export default function Dashboard() {
                 {generating ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Generating…
+                    <span dir="rtl">מייצר פאץ&apos;...</span>
                   </>
                 ) : (
                   <>
@@ -232,7 +232,20 @@ export default function Dashboard() {
 
             {/* OUTPUT */}
             <section className="space-y-6">
-              {error && (
+              {generating && (
+                <div className="flex items-center gap-3 rounded-md border border-tactical-accent/50 bg-tactical-olive/20 px-4 py-3 text-sm">
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-tactical-accent" />
+                  <div className="flex flex-col">
+                    <span dir="rtl" className="font-semibold text-tactical-text">
+                      מייצר פאץ&apos;...
+                    </span>
+                    <span className="text-[11px] text-tactical-muted">
+                      DALL·E 3 is rendering 4 candidates · this usually takes 10–20s
+                    </span>
+                  </div>
+                </div>
+              )}
+              {error && !generating && (
                 <div className="flex items-start gap-2 rounded-md border border-tactical-danger/60 bg-tactical-danger/10 p-3 text-xs text-tactical-text">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-tactical-warn" />
                   <span>{error}</span>
@@ -405,10 +418,15 @@ function PreviewGrid({
 
 function Skeleton() {
   return (
-    <div className="flex h-full w-full items-center justify-center">
-      <div className="flex flex-col items-center gap-2 text-tactical-muted">
-        <Loader2 className="h-6 w-6 animate-spin text-tactical-accent" />
-        <span className="text-[10px] uppercase tracking-widest">Rendering threads…</span>
+    <div className="relative flex h-full w-full items-center justify-center overflow-hidden">
+      <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-tactical-slate/40 via-tactical-panel to-tactical-olive/20" />
+      <div className="absolute inset-0 bg-grid opacity-40" />
+      <div className="relative flex flex-col items-center gap-2 text-tactical-muted">
+        <Loader2 className="h-7 w-7 animate-spin text-tactical-accent" />
+        <span dir="rtl" className="text-xs font-semibold text-tactical-text">
+          מייצר פאץ&apos;...
+        </span>
+        <span className="text-[10px] uppercase tracking-widest">DALL·E 3</span>
       </div>
     </div>
   );
