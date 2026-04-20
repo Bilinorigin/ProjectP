@@ -65,6 +65,7 @@ export default function Dashboard() {
   const [previews, setPreviews] = useState<string[]>([]);
   const [credits, setCredits] = useState(12);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
 
   const visibleBranches = BRANCHES.filter((b) => b.country === country);
 
@@ -101,13 +102,16 @@ export default function Dashboard() {
       const data = (await res.json()) as {
         images?: string[];
         error?: string;
+        code?: string | null;
         partialErrors?: string[];
       };
       if (!res.ok || !data.images?.length) {
+        setErrorCode(data.code ?? null);
         throw new Error(data.error ?? `Request failed (${res.status})`);
       }
       setPreviews(data.images);
       if (data.partialErrors?.length) {
+        setErrorCode(data.code ?? null);
         setError(
           `${data.partialErrors.length} of 4 images failed. Showing what we got.`,
         );
@@ -118,6 +122,11 @@ export default function Dashboard() {
     } finally {
       setGenerating(false);
     }
+  }
+
+  function dismissError() {
+    setError(null);
+    setErrorCode(null);
   }
 
   return (
@@ -246,10 +255,11 @@ export default function Dashboard() {
                 </div>
               )}
               {error && !generating && (
-                <div className="flex items-start gap-2 rounded-md border border-tactical-danger/60 bg-tactical-danger/10 p-3 text-xs text-tactical-text">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-tactical-warn" />
-                  <span>{error}</span>
-                </div>
+                <ErrorBanner
+                  message={error}
+                  code={errorCode}
+                  onDismiss={dismissError}
+                />
               )}
               <PreviewGrid
                 generating={generating}
@@ -554,6 +564,105 @@ function CreditsCard({ credits, onTopUp }: { credits: number; onTopUp: () => voi
       </button>
     </div>
   );
+}
+
+function ErrorBanner({
+  message,
+  code,
+  onDismiss,
+}: {
+  message: string;
+  code: string | null;
+  onDismiss: () => void;
+}) {
+  const info = errorInfo(code);
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-tactical-danger/60 bg-tactical-danger/10 p-3 text-sm">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-tactical-warn" />
+      <div className="flex-1 space-y-1">
+        <p className="font-semibold text-tactical-text">{info.title}</p>
+        <p className="text-xs text-tactical-text/80">{info.hint}</p>
+        {info.link && (
+          <a
+            href={info.link.href}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-tactical-accent hover:underline"
+          >
+            {info.link.label} →
+          </a>
+        )}
+        <p className="pt-1 font-mono text-[10px] text-tactical-muted">
+          {message}
+        </p>
+      </div>
+      <button
+        onClick={onDismiss}
+        className="rounded-md border border-tactical-edge px-2 py-1 text-[10px] uppercase tracking-widest text-tactical-muted hover:text-tactical-text"
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
+function errorInfo(code: string | null): {
+  title: string;
+  hint: string;
+  link: { href: string; label: string } | null;
+} {
+  switch (code) {
+    case "billing_hard_limit_reached":
+      return {
+        title: "OpenAI monthly spend cap reached",
+        hint:
+          "Your account has hit the hard spending limit you set on OpenAI. Raise it and retry — no redeploy needed.",
+        link: {
+          href: "https://platform.openai.com/settings/organization/billing/limits",
+          label: "Raise billing limit",
+        },
+      };
+    case "insufficient_quota":
+      return {
+        title: "No OpenAI credits available",
+        hint:
+          "Your OpenAI account has no usable credit. Add a payment method or top up to continue generating.",
+        link: {
+          href: "https://platform.openai.com/settings/organization/billing/overview",
+          label: "Open billing",
+        },
+      };
+    case "rate_limit_exceeded":
+      return {
+        title: "OpenAI rate limit hit",
+        hint:
+          "Your organization is on a low images-per-minute tier. Requests are already serialized; wait a minute and retry, or raise your usage tier ($5+ spent moves you to Tier 1).",
+        link: {
+          href: "https://platform.openai.com/settings/organization/limits",
+          label: "View rate limits",
+        },
+      };
+    case "invalid_api_key":
+      return {
+        title: "OpenAI API key rejected",
+        hint:
+          "The configured OPENAI_API_KEY was rejected. Rotate the key in OpenAI, paste it fresh in Vercel env vars, and redeploy.",
+        link: { href: "https://platform.openai.com/api-keys", label: "Manage keys" },
+      };
+    case "content_policy_violation":
+      return {
+        title: "Prompt rejected by content policy",
+        hint:
+          "OpenAI flagged the concept. Try softer language — e.g., remove weapon specifics, swap 'strike' for 'soar', avoid real unit identifiers.",
+        link: null,
+      };
+    default:
+      return {
+        title: "Generation failed",
+        hint: "Check Vercel runtime logs for the full OpenAI error.",
+        link: null,
+      };
+  }
 }
 
 function Footer() {

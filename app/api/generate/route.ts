@@ -129,45 +129,54 @@ export async function POST(req: Request) {
     "ornate detailed version with finer stitching",
   ].slice(0, count);
 
-  // 5) Fan out to DALL·E 3 (n=1 per request).
-  const results = await Promise.allSettled(
-    variants.map((variant, i) =>
-      callDalle(apiKey, `${enhanced.prompt}, ${variant}`, i),
-    ),
-  );
-
+  // 5) Call DALL·E 3 sequentially (not parallel) so we don't trip per-minute
+  //    rate limits on low-tier OpenAI orgs. If we hit a fatal org-wide error
+  //    (billing cap, invalid key, rate limit), stop immediately — every
+  //    further attempt will fail for the same reason and just burns latency.
   const images: string[] = [];
   const errors: string[] = [];
-  results.forEach((r, i) => {
-    if (r.status === "fulfilled") {
-      images.push(r.value);
-    } else {
-      const reason =
-        r.reason instanceof Error ? r.reason.message : String(r.reason);
-      errors.push(`slot ${i + 1}: ${reason}`);
+  let fatalCode: string | null = null;
+
+  for (let i = 0; i < variants.length; i++) {
+    try {
+      const url = await callDalle(apiKey, `${enhanced.prompt}, ${variants[i]}`, i);
+      images.push(url);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`slot ${i + 1}: ${msg}`);
+      if (isFatalOrgError(msg)) {
+        fatalCode = extractErrorCode(msg);
+        console.warn(
+          `[/api/generate] fatal org-level error (${fatalCode}); aborting remaining slots`,
+        );
+        break;
+      }
     }
-  });
+  }
 
   if (images.length === 0) {
     console.error("[/api/generate] ALL image generations failed", {
       count,
       errors,
+      fatalCode,
       promptPreview: enhanced.prompt.slice(0, 200),
     });
     return NextResponse.json(
       {
         error: "All image generations failed.",
+        code: fatalCode,
         detail: errors,
         hint:
           "Check Vercel runtime logs for the full OpenAI error. Common causes: " +
-          "insufficient_quota, content_policy_violation, invalid_api_key, rate_limit_exceeded.",
+          "insufficient_quota, billing_hard_limit_reached, rate_limit_exceeded, " +
+          "content_policy_violation, invalid_api_key.",
       },
       { status: 502 },
     );
   }
 
   if (errors.length) {
-    console.warn("[/api/generate] partial failures", errors);
+    console.warn("[/api/generate] partial failures", { fatalCode, errors });
   }
 
   return NextResponse.json({
@@ -177,7 +186,23 @@ export async function POST(req: Request) {
     palette: enhanced.palette,
     images,
     partialErrors: errors.length ? errors : undefined,
+    code: fatalCode,
   });
+}
+
+// Errors that are about the *organization* rather than the specific prompt.
+// No point retrying sibling slots — they'll all fail identically.
+function isFatalOrgError(message: string): boolean {
+  return /billing_hard_limit_reached|insufficient_quota|rate_limit_exceeded|invalid_api_key|account_deactivated/i.test(
+    message,
+  );
+}
+
+function extractErrorCode(message: string): string | null {
+  const m = message.match(
+    /billing_hard_limit_reached|insufficient_quota|rate_limit_exceeded|invalid_api_key|account_deactivated|content_policy_violation/i,
+  );
+  return m ? m[0] : null;
 }
 
 async function callDalle(
