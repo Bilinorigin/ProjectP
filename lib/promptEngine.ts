@@ -92,13 +92,10 @@ const BRANCH_RULES: Record<
 > = {
   IAF: {
     keywords: [
-      "contemporary Israeli Air Force squadron morale patch in the aesthetic of modern pvcpatch_il style studios",
-      "bold illustrated design, often a cinematic scene or a character-driven composition rather than a plain heraldic crest",
-      "modern jet silhouettes: F-35I Adir, F-15I Ra'am, F-16I Sufa, and combat helicopters",
+      "contemporary Israeli Air Force squadron morale patch aesthetic in the style of modern pvcpatch_il studios",
+      "bold illustrated design: cinematic scene or character-driven composition rather than a plain heraldic crest",
       "prominent IAF roundel (Star of David inside a circle) integrated naturally into the design",
-      "bilingual typography: Hebrew unit name on an upper banner, English designation or date on a lower banner",
-      "vivid saturated colors acceptable (purple, yellow, scarlet, teal) alongside the IAF blue/grey signature",
-      "tongue-in-cheek squadron humor or operational gravitas as appropriate to the concept",
+      "vivid saturated colors acceptable alongside the IAF blue/grey signature",
     ],
     palette: ["IAF blue #1F3A5F", "steel grey #6E7B85", "off-white #E8E6DD"],
     defaultShape: "circle",
@@ -106,9 +103,7 @@ const BRANCH_RULES: Record<
   IDF: {
     keywords: [
       "contemporary IDF unit morale patch aesthetic, bold illustrated style",
-      "operational scene composition: desert terrain, night ops, armored vehicles, tactical gear",
       "prominent Star of David or unit emblem, integrated not hidden",
-      "bilingual layout: Hebrew unit name on one banner, English or operation name on another",
       "vivid saturated accent colors alongside the olive/khaki ground-forces base",
     ],
     palette: ["olive #3F4A2A", "khaki #8A7E5C", "black #0A0A0A"],
@@ -362,34 +357,45 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
   const subjectEnglish = analysis.fields.idea ? analysis.ideaEnglish : subject;
 
   const sentences: string[] = [];
+  const hasUserText = Boolean(input.squadron?.trim() || input.motto?.trim());
 
-  // 1) Opening shot — the patch itself + style anchor, single source of truth.
+  // 1) Opening shot - the patch itself + style anchor, single source of truth.
   sentences.push(
     `A ${shapeAdj} ${styleAdj} military morale patch, rendered as a flat-lay product photograph on a plain dark fabric surface.`,
   );
 
-  // 2) Subject / iconography.
+  // 2) Subject - stated explicitly and LOCKED. No other subjects allowed.
+  //    This is the single source of truth for CONTENT; branch keywords only
+  //    drive STYLE (aesthetic, palette, iconography cues). If the user named
+  //    a specific aircraft, vehicle, or creature, do NOT substitute it for
+  //    a different one.
   sentences.push(
-    `The central design depicts ${subjectEnglish}, drawing on ${branch.keywords[0]}.`,
+    `The central subject is EXACTLY: ${subjectEnglish}. Render only this subject - do not substitute it for any other aircraft type, vehicle, animal, or object. If the subject names a specific aircraft (for example F-35, F-15, F-16, Apache), render that exact airframe and no other.`,
   );
 
-  // 3) Branch heritage detail (one extra keyword, not all five).
-  if (branch.keywords[1]) {
-    sentences.push(`Iconography cues: ${branch.keywords[1]}.`);
-  }
-
-  // 4) Style / texture.
+  // 3) Style / texture.
   sentences.push(`${style.texture}, ${style.finish}.`);
 
-  // 5) Palette - dominant anchor + freedom for saturated accents where the
-  //    subject calls for it (matches real pvcpatch_il aesthetic).
+  // 4) Palette - dominant anchor + freedom for saturated accents.
   sentences.push(
     `Dominant color palette anchored by ${branch.palette.join(", ")}, with freedom to introduce one or two saturated accent colors (scarlet, gold, purple, teal, yellow) where the subject calls for it.`,
   );
 
-  // 6) Text elements — explicit banner placement for readability.
+  // 5) Aesthetic directive for Israeli patches. Bilingual banner language
+  //    is CONDITIONAL on user actually supplying text - otherwise DALL-E
+  //    hallucinates gibberish into empty banners.
+  if (input.country === "IL") {
+    const banners = hasUserText
+      ? " bold bilingual typography on one or two banner ribbons, and"
+      : "";
+    sentences.push(
+      `Render in the contemporary Israeli morale-patch visual language seen on modern IAF and IDF squadrons: confident illustrated design (cinematic scene or character-driven composition), vivid saturated colors,${banners} a clearly integrated IAF roundel or Star of David where appropriate. The design should feel operational and modern, not a stiff heraldic crest.`,
+    );
+  }
+
+  // 6) Text elements - included ONLY when the user gave us text to render.
   const textElements: string[] = [];
-  if (input.squadron) {
+  if (input.squadron?.trim()) {
     const sqTxt = input.squadron.trim();
     textElements.push(
       analysis.fields.squadron
@@ -397,7 +403,7 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
         : `a clean bold squadron number "${sqTxt}"`,
     );
   }
-  if (input.motto) {
+  if (input.motto?.trim()) {
     const mtTxt = input.motto.trim();
     textElements.push(
       analysis.fields.motto
@@ -405,9 +411,16 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
         : `a curved ribbon banner at the bottom reading "${mtTxt}"`,
     );
   }
+
   if (textElements.length) {
     sentences.push(
-      `Text elements: ${textElements.join("; ")}. Keep all lettering crisp, legible, and spelled correctly.`,
+      `Text elements (these are the ONLY words that should appear on the patch): ${textElements.join("; ")}. Render these exactly as written, crisp and legible. Do not add any other words, letters, branch names, dates, or decorative text anywhere on the patch.`,
+    );
+  } else {
+    // No text fields provided - forbid text entirely so DALL-E does not
+    // invent garbled letters on banners.
+    sentences.push(
+      "No text, no lettering, no words, no numbers, no banners with words, no captions. The patch must be purely a visual emblem with zero typography.",
     );
   }
 
@@ -423,20 +436,11 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
     );
   }
 
-  // 8) Aesthetic directive for Israeli patches - match the contemporary
-  //    IAF/IDF morale-patch visual language (pvcpatch_il reference), which
-  //    is illustrated and character-driven, NOT a classic heraldic crest.
-  if (input.country === "IL") {
-    sentences.push(
-      "Render in the contemporary Israeli morale-patch visual language seen on modern IAF and IDF squadrons: confident illustrated design (cinematic scene or character-driven composition), vivid saturated colors, bold bilingual typography with Hebrew on an upper banner and English on a lower banner, and a clearly integrated IAF roundel or Star of David where appropriate. The design should feel operational and modern, not a stiff heraldic crest.",
-    );
-  }
-
-  // 9) Composition lock - LAST so DALL-E 3 weighs it heaviest. Applies to
-  //    how the PATCH is photographed, not to the illustration inside it -
-  //    internal scene perspective is fine and often desirable.
+  // 8) Composition lock + final subject reinforcement. LAST so DALL-E 3
+  //    weighs it heaviest. Flat-lay applies to how the PATCH is photographed;
+  //    internal illustration may still use scene perspective.
   sentences.push(
-    "Composition rules: the patch itself is photographed as a perfectly centered flat-lay product shot, viewed head-on from directly above, with zero camera tilt, zero rotation, and no 3D-rendered angle. No shadows beneath the patch, no background clutter. (Internal illustration inside the patch may use scene perspective freely where it serves the subject.)",
+    `Composition rules: the patch itself is photographed as a perfectly centered flat-lay product shot, viewed head-on from directly above, with zero camera tilt, zero rotation, and no 3D-rendered angle. No shadows beneath the patch, no background clutter. Internal illustration inside the patch may use scene perspective freely where it serves the subject. Final reminder: the subject is ${subjectEnglish} and only ${subjectEnglish} - no substitutions.`,
   );
 
   return {
