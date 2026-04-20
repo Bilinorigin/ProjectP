@@ -15,6 +15,8 @@ import {
   Radar,
   ArrowRight,
   Plane,
+  AlertTriangle,
+  Download,
 } from "lucide-react";
 import {
   enhancePrompt,
@@ -62,6 +64,7 @@ export default function Dashboard() {
   const [generating, setGenerating] = useState(false);
   const [previews, setPreviews] = useState<string[]>([]);
   const [credits, setCredits] = useState(12);
+  const [error, setError] = useState<string | null>(null);
 
   const visibleBranches = BRANCHES.filter((b) => b.country === country);
 
@@ -77,15 +80,44 @@ export default function Dashboard() {
   }
 
   async function handleGenerate() {
-    if (credits < 1) return;
+    if (credits < 1 || generating) return;
     setGenerating(true);
     setPreviews([]);
-    // Simulated diffusion: render 4 deterministic SVG patches from the enhanced prompt.
-    await new Promise((r) => setTimeout(r, 900));
-    const seeds = [11, 27, 53, 91].map((s) => s + idea.length);
-    setPreviews(seeds.map((s) => previewSvg(s, enhanced.palette, style, idea)));
-    setCredits((c) => c - 1);
-    setGenerating(false);
+    setError(null);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          country,
+          branch,
+          style,
+          idea,
+          motto,
+          squadron,
+          count: 4,
+        }),
+      });
+      const data = (await res.json()) as {
+        images?: string[];
+        error?: string;
+        partialErrors?: string[];
+      };
+      if (!res.ok || !data.images?.length) {
+        throw new Error(data.error ?? `Request failed (${res.status})`);
+      }
+      setPreviews(data.images);
+      if (data.partialErrors?.length) {
+        setError(
+          `${data.partialErrors.length} of 4 images failed. Showing what we got.`,
+        );
+      }
+      setCredits((c) => c - 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Generation failed.");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   return (
@@ -200,6 +232,12 @@ export default function Dashboard() {
 
             {/* OUTPUT */}
             <section className="space-y-6">
+              {error && (
+                <div className="flex items-start gap-2 rounded-md border border-tactical-danger/60 bg-tactical-danger/10 p-3 text-xs text-tactical-text">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-tactical-warn" />
+                  <span>{error}</span>
+                </div>
+              )}
               <PreviewGrid
                 generating={generating}
                 previews={previews}
@@ -332,15 +370,29 @@ function PreviewGrid({
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
-            className="relative aspect-square overflow-hidden rounded-lg border border-tactical-edge bg-tactical-bg"
+            className="group relative aspect-square overflow-hidden rounded-lg border border-tactical-edge bg-tactical-bg"
           >
             {generating ? (
               <Skeleton />
             ) : previews[i] ? (
-              <div
-                className="h-full w-full"
-                dangerouslySetInnerHTML={{ __html: previews[i] }}
-              />
+              <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={previews[i]}
+                  alt={`Patch candidate ${i + 1}`}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+                <a
+                  href={previews[i]}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="absolute right-2 top-2 flex items-center gap-1 rounded-md border border-tactical-edge bg-tactical-bg/80 px-2 py-1 text-[10px] text-tactical-text opacity-0 transition group-hover:opacity-100"
+                >
+                  <Download className="h-3 w-3" />
+                  Open
+                </a>
+              </>
             ) : (
               <Empty palette={palette} index={i} />
             )}
@@ -497,44 +549,3 @@ function Footer() {
   );
 }
 
-/* ============================================================ */
-/* Deterministic SVG mock so the 2x2 grid shows real previews   */
-/* without hitting any external image API.                       */
-/* ============================================================ */
-
-function previewSvg(seed: number, palette: string[], style: PatchStyle, idea: string): string {
-  const colors = palette.map((c) => c.split(" ").pop() ?? "#3F4A2A");
-  const [c1, c2 = "#465763", c3 = "#9CB071"] = colors;
-  const ring = (seed % 5) + 4;
-  const initials = (idea.match(/\b[A-Za-z]/g) ?? ["P", "B"]).slice(0, 2).join("").toUpperCase();
-  const filter = style === "subdued"
-    ? "filter='url(#desat)'"
-    : style === "pvc"
-      ? "filter='url(#emboss)'"
-      : "";
-  return `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="100%" height="100%">
-  <defs>
-    <radialGradient id="bg${seed}" cx="50%" cy="40%">
-      <stop offset="0%" stop-color="${c2}" />
-      <stop offset="100%" stop-color="${c1}" />
-    </radialGradient>
-    <filter id="desat"><feColorMatrix type="saturate" values="0.25"/></filter>
-    <filter id="emboss"><feGaussianBlur stdDeviation="0.6"/></filter>
-  </defs>
-  <rect width="200" height="200" fill="#0B0F0E"/>
-  <g ${filter}>
-    <circle cx="100" cy="100" r="92" fill="url(#bg${seed})" stroke="${c3}" stroke-width="3"/>
-    <circle cx="100" cy="100" r="80" fill="none" stroke="${c3}" stroke-width="1" stroke-dasharray="2 3" opacity="0.6"/>
-    ${Array.from({ length: ring }).map((_, i) => {
-      const a = (i / ring) * Math.PI * 2;
-      const x = 100 + Math.cos(a) * 60;
-      const y = 100 + Math.sin(a) * 60;
-      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${c3}" opacity="0.7"/>`;
-    }).join("")}
-    <path d="M60 110 L100 60 L140 110 L120 110 L100 85 L80 110 Z" fill="${c3}" opacity="0.9"/>
-    <text x="100" y="150" text-anchor="middle" font-family="ui-monospace, monospace" font-size="22" font-weight="700" fill="${c3}">${initials}</text>
-    <text x="100" y="172" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="${c3}" opacity="0.8" letter-spacing="2">PATCHBASE</text>
-  </g>
-</svg>`.trim();
-}
