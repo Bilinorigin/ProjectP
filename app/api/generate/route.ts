@@ -23,35 +23,76 @@ interface GenerateRequest {
 
 const OPENAI_URL = "https://api.openai.com/v1/images/generations";
 
-export async function POST(req: Request) {
-  const apiKey = process.env.OPENAI_API_KEY;
+/**
+ * Node's fetch (undici) rejects any header byte outside 0x00-0xFF with a
+ * TypeError, and OpenAI rejects anything that isn't a clean `sk-...` key.
+ *
+ * When a key is pasted from a Hebrew terminal / RTL editor it can silently
+ * carry bidi marks (U+200E/F, U+202A–E), zero-width spaces (U+200B–D),
+ * a BOM (U+FEFF), or wrapping quotes — all of which break the header.
+ *
+ * This helper strips every non-printable-ASCII byte so whatever we hand to
+ * `Authorization` is guaranteed to be a valid HTTP header value.
+ */
+function sanitizeApiKey(raw: string | undefined): string {
+  if (!raw) return "";
+  return raw
+    .replace(/^\uFEFF/, "")                 // BOM
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "") // zero-width + bidi
+    .replace(/^["'`]|["'`]$/g, "")          // wrapping quotes
+    .replace(/[^\x20-\x7E]/g, "")          // keep only printable ASCII
+    .trim();
+}
 
-  // 1) Verify the env var is actually present at request time.
+function extractOpenAIError(json: unknown): string | null {
+  if (!json || typeof json !== "object") return null;
+  const err = (json as {
+    error?: { message?: string; code?: string; type?: string };
+  }).error;
+  if (!err) return null;
+  return [err.code, err.type, err.message].filter(Boolean).join(" | ") || null;
+}
+
+export async function POST(req: Request) {
+  // 1) Read + sanitize the API key.
+  const rawKey = process.env.OPENAI_API_KEY;
+  const apiKey = sanitizeApiKey(rawKey);
+
   if (!apiKey) {
-    console.error(
-      "[/api/generate] OPENAI_API_KEY is missing at runtime.",
-      {
-        vercelEnv: process.env.VERCEL_ENV ?? "unknown",
-        nodeEnv: process.env.NODE_ENV,
-      },
-    );
+    console.error("[/api/generate] OPENAI_API_KEY missing or invalid", {
+      rawPresent: Boolean(rawKey),
+      rawLength: rawKey?.length ?? 0,
+      sanitizedLength: apiKey.length,
+      vercelEnv: process.env.VERCEL_ENV ?? "unknown",
+    });
     return NextResponse.json(
       {
         error:
-          "OPENAI_API_KEY is not configured on the server. Add it in Vercel → Project → Settings → Environment Variables and redeploy.",
+          "OPENAI_API_KEY is not configured (or was empty after stripping non-ASCII characters). Re-paste the key in Vercel → Settings → Environment Variables, making sure there are no hidden characters, then redeploy.",
       },
       { status: 500 },
     );
   }
 
-  // Log a masked fingerprint so Vercel logs confirm *which* key is in use
-  // without ever leaking it.
-  console.log("[/api/generate] using key", {
+  // 2) Hard guarantee: the key we pass to Authorization must be ASCII-only.
+  if (!/^[\x20-\x7E]+$/.test(apiKey)) {
+    console.error(
+      "[/api/generate] API key still contains non-ASCII bytes after sanitize",
+    );
+    return NextResponse.json(
+      { error: "API key contains invalid characters." },
+      { status: 500 },
+    );
+  }
+
+  // Masked fingerprint in logs — confirms which key is in use without leaking.
+  console.log("[/api/generate] key ok", {
     length: apiKey.length,
     fingerprint: `${apiKey.slice(0, 3)}…${apiKey.slice(-3)}`,
     vercelEnv: process.env.VERCEL_ENV ?? "unknown",
   });
 
+  // 3) Parse body.
   let body: GenerateRequest;
   try {
     body = (await req.json()) as GenerateRequest;
@@ -67,6 +108,9 @@ export async function POST(req: Request) {
     );
   }
 
+  // 4) Build the enhanced prompt. Hebrew / unicode in `idea`, `motto`,
+  //    or `squadron` is fine — it only ever travels in the request BODY,
+  //    which is explicitly UTF-8 encoded below.
   const enhanced = enhancePrompt({
     country: body.country,
     branch: body.branch,
@@ -85,6 +129,7 @@ export async function POST(req: Request) {
     "ornate detailed version with finer stitching",
   ].slice(0, count);
 
+  // 5) Fan out to DALL·E 3 (n=1 per request).
   const results = await Promise.allSettled(
     variants.map((variant, i) =>
       callDalle(apiKey, `${enhanced.prompt}, ${variant}`, i),
@@ -114,9 +159,8 @@ export async function POST(req: Request) {
         error: "All image generations failed.",
         detail: errors,
         hint:
-          "Check Vercel logs for the full OpenAI error. Common causes: " +
-          "account has no DALL·E 3 access, insufficient credits, " +
-          "content-policy rejection, or rate limit.",
+          "Check Vercel runtime logs for the full OpenAI error. Common causes: " +
+          "insufficient_quota, content_policy_violation, invalid_api_key, rate_limit_exceeded.",
       },
       { status: 502 },
     );
@@ -141,31 +185,41 @@ async function callDalle(
   prompt: string,
   slot: number,
 ): Promise<string> {
+  // Body — explicitly UTF-8 encoded. This is the ONLY place unicode may live;
+  // headers stay strict ASCII.
+  const payload = {
+    model: "dall-e-3",
+    prompt,
+    n: 1,
+    size: "1024x1024",
+    quality: "standard",
+    style: "vivid",
+    response_format: "url",
+  };
+  const bodyBytes = new TextEncoder().encode(JSON.stringify(payload));
+
+  // Headers — constructed via Headers() so any bad byte fails loudly here
+  // (inside the try) rather than deep inside undici.
+  const headers = new Headers();
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("Authorization", `Bearer ${apiKey}`);
+  headers.set("Accept", "application/json");
+
   try {
     const res = await fetch(OPENAI_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "dall-e-3",
-        prompt,
-        n: 1,
-        size: "1024x1024",
-        quality: "standard",
-        style: "vivid",
-        response_format: "url",
-      }),
+      headers,
+      body: bodyBytes,
+      cache: "no-store",
     });
 
-    // OpenAI always returns JSON for both success and error; parse once.
+    // OpenAI returns JSON for both success and error; parse once.
     const raw = await res.text();
     let json: unknown = null;
     try {
       json = JSON.parse(raw);
     } catch {
-      // leave as null; raw text will be surfaced below
+      /* leave as null — raw text will be surfaced */
     }
 
     if (!res.ok) {
@@ -185,16 +239,14 @@ async function callDalle(
     }
     return url;
   } catch (err) {
-    // Network-level failures (DNS, timeout, fetch rejection) also land here.
-    console.error(`[/api/generate] slot ${slot} fetch threw`, err);
+    // Catches TypeError from undici (bad header), network failures, and the
+    // re-thrown OpenAI errors above — everything goes to the logs with the
+    // slot index and a preview of the prompt that triggered it.
+    console.error(`[/api/generate] slot ${slot} fetch threw`, {
+      name: err instanceof Error ? err.name : typeof err,
+      message: err instanceof Error ? err.message : String(err),
+      promptPreview: prompt.slice(0, 200),
+    });
     throw err;
   }
-}
-
-function extractOpenAIError(json: unknown): string | null {
-  if (!json || typeof json !== "object") return null;
-  const maybeErr = (json as { error?: { message?: string; code?: string; type?: string } }).error;
-  if (!maybeErr) return null;
-  const parts = [maybeErr.code, maybeErr.type, maybeErr.message].filter(Boolean);
-  return parts.length ? parts.join(" | ") : null;
 }
