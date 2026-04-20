@@ -359,18 +359,16 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
   const sentences: string[] = [];
   const hasUserText = Boolean(input.squadron?.trim() || input.motto?.trim());
 
-  // 1) Opening shot - the patch itself + style anchor, single source of truth.
+  // 1) Opening shot - subject baked in from the first clause so DALL-E 3
+  //    never loses it. Subject leads; patch form follows.
   sentences.push(
-    `A ${shapeAdj} ${styleAdj} military morale patch, rendered as a flat-lay product photograph on a plain dark fabric surface.`,
+    `A ${shapeAdj} ${styleAdj} morale patch depicting ${subjectEnglish}, shown as a flat-lay product photograph on a plain dark fabric surface. The illustration inside the patch is of ${subjectEnglish} and nothing else.`,
   );
 
-  // 2) Subject - stated explicitly and LOCKED. No other subjects allowed.
-  //    This is the single source of truth for CONTENT; branch keywords only
-  //    drive STYLE (aesthetic, palette, iconography cues). If the user named
-  //    a specific aircraft, vehicle, or creature, do NOT substitute it for
-  //    a different one.
+  // 2) Subject lock. Explicit "do not substitute" language because DALL-E 3
+  //    loves to swap specific airframes for whatever jet it trained on most.
   sentences.push(
-    `The central subject is EXACTLY: ${subjectEnglish}. Render only this subject - do not substitute it for any other aircraft type, vehicle, animal, or object. If the subject names a specific aircraft (for example F-35, F-15, F-16, Apache), render that exact airframe and no other.`,
+    `Subject fidelity is critical: render ${subjectEnglish} exactly, with no substitution to a different aircraft, vehicle, character, or creature. If the subject names a specific airframe (F-35, F-15, F-16, Apache, Blackhawk), render that exact airframe - do not default to a generic jet. If the subject names a specific character or figure, include that character visibly in the illustration.`,
   );
 
   // 3) Style / texture.
@@ -381,16 +379,21 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
     `Dominant color palette anchored by ${branch.palette.join(", ")}, with freedom to introduce one or two saturated accent colors (scarlet, gold, purple, teal, yellow) where the subject calls for it.`,
   );
 
-  // 5) Aesthetic directive for Israeli patches. Bilingual banner language
-  //    is CONDITIONAL on user actually supplying text - otherwise DALL-E
-  //    hallucinates gibberish into empty banners.
+  // 5) Aesthetic directive for Israeli patches. IMPORTANT: we do NOT mention
+  //    "Israeli morale patch" or "IAF squadron" in the no-text path, because
+  //    those phrases prime DALL-E to hallucinate Hebrew gibberish into the
+  //    design even when we've told it "no text". Only the visual-style
+  //    adjectives survive when no text is requested.
   if (input.country === "IL") {
-    const banners = hasUserText
-      ? " bold bilingual typography on one or two banner ribbons, and"
-      : "";
-    sentences.push(
-      `Render in the contemporary Israeli morale-patch visual language seen on modern IAF and IDF squadrons: confident illustrated design (cinematic scene or character-driven composition), vivid saturated colors,${banners} a clearly integrated IAF roundel or Star of David where appropriate. The design should feel operational and modern, not a stiff heraldic crest.`,
-    );
+    if (hasUserText) {
+      sentences.push(
+        "Visual language: contemporary Israeli morale-patch aesthetic (confident illustrated design, cinematic or character-driven composition, vivid saturated colors, a clearly integrated IAF roundel or Star of David where appropriate). The design feels operational and modern, not a stiff heraldic crest.",
+      );
+    } else {
+      sentences.push(
+        "Visual language: confident illustrated design with a cinematic or character-driven composition, vivid saturated colors, and a clearly integrated roundel or Star of David motif where appropriate. Modern and operational, not a stiff heraldic crest.",
+      );
+    }
   }
 
   // 6) Text elements - included ONLY when the user gave us text to render.
@@ -414,13 +417,14 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
 
   if (textElements.length) {
     sentences.push(
-      `Text elements (these are the ONLY words that should appear on the patch): ${textElements.join("; ")}. Render these exactly as written, crisp and legible. Do not add any other words, letters, branch names, dates, or decorative text anywhere on the patch.`,
+      `Text elements (these are the ONLY words that should appear on the patch): ${textElements.join("; ")}. Render these exactly as written, crisp and legible. Do not add any other words, letters, branch names, dates, Hebrew, English, or decorative typography anywhere else on the patch.`,
     );
   } else {
-    // No text fields provided - forbid text entirely so DALL-E does not
-    // invent garbled letters on banners.
+    // No text fields - forbid text aggressively. DALL-E 3 ignores mild
+    // "no text" hints, so we repeat the prohibition in several forms and
+    // positively describe the surface as pure illustration.
     sentences.push(
-      "No text, no lettering, no words, no numbers, no banners with words, no captions. The patch must be purely a visual emblem with zero typography.",
+      "The patch surface is pure illustrated imagery only. ABSOLUTELY NO TEXT of any kind: no Hebrew characters, no English characters, no letters of any alphabet, no numbers, no words, no captions, no mottos, no squadron names, no branch designations, no dates, no call-signs. No empty banners, ribbons, or scrolls that contain writing - any decorative ribbon shape must be blank. The emblem IS the design; typography is strictly forbidden.",
     );
   }
 
@@ -439,8 +443,11 @@ export function enhancePrompt(input: PromptInput): EnhancedPrompt {
   // 8) Composition lock + final subject reinforcement. LAST so DALL-E 3
   //    weighs it heaviest. Flat-lay applies to how the PATCH is photographed;
   //    internal illustration may still use scene perspective.
+  const finalTextRule = hasUserText
+    ? ""
+    : " The patch contains zero text of any language - any letters visible in the output would be an error.";
   sentences.push(
-    `Composition rules: the patch itself is photographed as a perfectly centered flat-lay product shot, viewed head-on from directly above, with zero camera tilt, zero rotation, and no 3D-rendered angle. No shadows beneath the patch, no background clutter. Internal illustration inside the patch may use scene perspective freely where it serves the subject. Final reminder: the subject is ${subjectEnglish} and only ${subjectEnglish} - no substitutions.`,
+    `Composition rules: the patch itself is photographed as a perfectly centered flat-lay product shot, viewed head-on from directly above, with zero camera tilt, zero rotation, and no 3D-rendered angle. No shadows beneath the patch, no background clutter. Internal illustration inside the patch may use scene perspective freely where it serves the subject. Final reminder: the central subject is ${subjectEnglish} and only ${subjectEnglish} - no substitutions.${finalTextRule}`,
   );
 
   return {
